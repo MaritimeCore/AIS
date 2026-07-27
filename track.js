@@ -23,7 +23,7 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 // A Class B transponder reports every ~30 s under way, but only every ~3 min
 // when moored. Four minutes covers the slow case with room to spare while
 // leaving the job well inside its runner budget.
-const WAIT_MS = 4 * 60 * 1000;
+const WAIT_MS = 3 * 60 * 1000;
 
 // Skip writing a point that is essentially the previous one. Mirrors the
 // thresholds used by the in-database cron logic so both sources agree.
