@@ -1,3 +1,4 @@
+
 // CELIA P — AIS tracker (streaming)
 //
 // Holds one AISStream connection open for hours and writes what arrives:
@@ -92,6 +93,7 @@ const lastPosAt = new Map();    // session_id → when it was stored
 let lastStaticAt = 0;
 let lastStaticKey = "";
 let latestNavStatus = null;     // carried from PositionReport into static rows
+let latestPosition = null;      // ShipStaticData carries no coordinates of its own
 
 let written = 0, skipped = 0, heartbeats = 0, statics = 0, received = 0;
 
@@ -236,7 +238,19 @@ async function saveStatic(msg) {
     callsign,
     imo,
     mmsi: String(YACHT_MMSI),
-    raw_payload: msg,
+    // AdminGPS → Voyage KPIs reads latitude/longitude/sog from the top level of
+    // raw_payload, so flatten them there. The original messages are kept
+    // alongside rather than discarded.
+    raw_payload: {
+      latitude: latestPosition?.latitude ?? null,
+      longitude: latestPosition?.longitude ?? null,
+      sog: latestPosition?.speed ?? null,
+      cog: latestPosition?.cog ?? null,
+      heading: latestPosition?.heading ?? null,
+      navigation_status_code: latestNavStatus,
+      shipStaticData: s,
+      metaData: meta,
+    },
   }));
 
   const { error } = await supabase.from("vessel_ais_data").insert(rows);
@@ -321,12 +335,15 @@ function connect() {
         ? r.TrueHeading
         : r.Cog ?? null;
 
-      await savePosition({
+      latestPosition = {
         latitude: meta.latitude,
         longitude: meta.longitude,
         speed: r.Sog ?? null,
+        cog: r.Cog ?? null,
         heading,
-      });
+      };
+
+      await savePosition(latestPosition);
       return;
     }
 
