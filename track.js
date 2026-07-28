@@ -1,4 +1,3 @@
-
 // CELIA P — AIS tracker (streaming)
 //
 // Holds one AISStream connection open for hours and writes what arrives:
@@ -30,8 +29,16 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const RUN_MINUTES = 330;
 
 // Nothing for this long means the socket is probably dead rather than the
-// yacht being quiet — a moored Class B still reports every ~3 minutes.
-const SILENCE_TIMEOUT_MS = 6 * 60 * 1000;
+// yacht being quiet. A moored Class B reports every ~3 minutes, but shore
+// coverage is patchy, so give it real room before assuming the socket is at
+// fault — tearing down a healthy connection costs more than waiting.
+const SILENCE_TIMEOUT_MS = 15 * 60 * 1000;
+
+// AISStream draws on volunteer shore receivers, so a yacht can be transmitting
+// normally and still be unheard for hours. Reconnecting every 6 minutes through
+// that is pointless noise, so back off after each fruitless attempt and reset
+// the moment anything arrives.
+const RECONNECT_BACKOFF_MS = [15_000, 60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000];
 
 // Movement thresholds, matching the database-side logic so both agree on what
 // counts as a change worth storing.
@@ -96,6 +103,7 @@ let latestNavStatus = null;     // carried from PositionReport into static rows
 let latestPosition = null;      // ShipStaticData carries no coordinates of its own
 
 let written = 0, skipped = 0, heartbeats = 0, statics = 0, received = 0;
+let fruitlessAttempts = 0;
 
 function haversineMeters(lat1, lon1, lat2, lon2) {
   const R = 6371000;
@@ -285,7 +293,17 @@ function connect() {
     clearTimeout(silenceTimer);
     silenceTimer = setTimeout(() => {
       console.log(`${clock()} ⚠ Σιωπή ${SILENCE_TIMEOUT_MS / 60000} λεπτών — επανασύνδεση`);
-      try { ws.terminate(); } catch { /* already gone */ }
+      // close() performs the WebSocket closing handshake, so the server learns
+      // the session is over. terminate() rips the socket away without telling
+      // it, which can leave the connection registered as live on their side —
+      // and if they cap connections per API key, repeated teardowns starve the
+      // replacements. Fall back to terminate only if the handshake stalls.
+      try {
+        ws.close();
+        setTimeout(() => {
+          try { ws.terminate(); } catch { /* already gone */ }
+        }, 5000);
+      } catch { /* already closing */ }
     }, SILENCE_TIMEOUT_MS);
   };
 
@@ -320,6 +338,7 @@ function connect() {
     }
 
     received++;
+    fruitlessAttempts = 0;
     resetSilence();
 
     if (msg.MessageType === "PositionReport") {
@@ -357,8 +376,17 @@ function connect() {
   ws.on("close", (code) => {
     clearTimeout(silenceTimer);
     if (Date.now() >= deadline) return stop("Τέλος χρόνου");
-    console.log(`${clock()} ⚠ Η σύνδεση έκλεισε (code=${code}) — επανασύνδεση σε 15 δευτ.`);
-    setTimeout(connect, 15000);
+
+    const delay = RECONNECT_BACKOFF_MS[
+      Math.min(fruitlessAttempts, RECONNECT_BACKOFF_MS.length - 1)
+    ];
+    fruitlessAttempts++;
+
+    console.log(
+      `${clock()} ⚠ Η σύνδεση έκλεισε (code=${code}) — ` +
+      `επανασύνδεση σε ${Math.round(delay / 1000)} δευτ.`,
+    );
+    setTimeout(connect, delay);
   });
 }
 
